@@ -18,7 +18,7 @@ pub type CNF = Vec<Clause>;
 pub struct Rec {level:i32, value:Lit}
 
 #[derive(Debug, Clone)]
-pub struct Assignment {
+pub struct SimpleAssignment {
     trail: Vec<Rec>,
     graph: HashMap<Rec, HashSet<Rec>>
 }
@@ -29,19 +29,64 @@ pub enum UnitResult { Conflict(HashSet<Rec>), Unit(Lit, HashSet<Rec>), No }
 #[derive(PartialEq)]
 pub enum EvalResult { True, False, Unassigned }
 
+pub trait Assignment {
+    fn add(&mut self, r:Rec, reason:HashSet<Rec>);
+    fn get(&self, v:Var) -> Option<&Rec>;
+    fn get_reason(&self, r:&Rec) -> Option<&HashSet<Rec>>;
+    fn backtrack(&mut self, l:i32);
+    fn is_assigned(&self, v:Var) -> bool;
+    fn iter(&self) -> std::slice::Iter<Rec>;
+}
+
 impl Rec {
     fn new(l:i32, v:Lit) -> Rec{
         Rec { level:l, value:v }
     }
 }
 
-impl Assignment {
-    fn new() -> Assignment {
-        Assignment { trail:Vec::new(), graph:HashMap::new() }
+impl SimpleAssignment {
+    fn new() -> SimpleAssignment {
+        SimpleAssignment { trail:Vec::new(), graph:HashMap::new() }
     }
+}
+
+impl Assignment for SimpleAssignment {
     fn add(&mut self, r:Rec, reason:HashSet<Rec>) {
         self.trail.push(r); 
         self.graph.insert(r, reason);
+    }
+    fn get(&self, v : Var) -> Option<&Rec> {
+        self.iter()
+            .fold(None, |acc, x|
+                  match acc {
+                      None =>
+                          if var(&x.value) == v {
+                              Some(x)
+                          } else {
+                              acc
+                          }
+                      _ => acc
+                  }
+            )
+    }
+    fn get_reason(&self, r:&Rec) -> Option<&HashSet<Rec>> {
+        self.graph.get(&r)
+    }
+    fn backtrack(&mut self, l:i32) {
+        let trace = self.iter().filter(|&x| x.level < l).cloned().collect();
+        self.graph.retain(|k, _v| k.level < l);
+        self.trail = trace;
+    }
+    fn is_assigned(&self, v:Var) -> bool {
+        for r in &self.trail {
+            if var(&r.value) == v {
+                return true;
+            }
+        }
+        return false;
+    }
+    fn iter(&self) -> std::slice::Iter<Rec> {
+        self.trail.iter()
     }
 }
 
@@ -53,22 +98,13 @@ fn var(l : &Lit) -> Var
     }
 }
 
-fn is_assigned(v:Var, a:&Assignment) -> bool {
-    for r in &a.trail {
-        if var(&r.value) == v {
-            return true;
-        }
-    }
-    return false;
-}
-
-fn unassigned(ϕ : &CNF, a : &Assignment) -> HashSet<Var>
+fn unassigned<A:Assignment>(ϕ : &CNF, a : &A) -> HashSet<Var>
 {
     let mut vs = HashSet::new();
     for c in ϕ {
         for l in c {
             let v = var(&l);
-            if !is_assigned(v, a) {
+            if !a.is_assigned(v) {
                 vs.insert(v);
             }
         }
@@ -76,27 +112,12 @@ fn unassigned(ϕ : &CNF, a : &Assignment) -> HashSet<Var>
     return vs;
 }
 
-fn lookup(v : Var, a : &Assignment) -> Option<&Rec> {
-    a.trail.iter().fold(None,
-                        |acc, x|
-                        match acc {
-                            None =>
-                                if var(&x.value) == v {
-                                    Some(&x)
-                                } else {
-                                    acc
-                                }
-                            _ => acc
-                        }
-    )
-}
-
-fn is_unit(ω : &Clause, a : &Assignment) -> UnitResult
+fn is_unit<A:Assignment>(ω : &Clause, a : &A) -> UnitResult
 {
     let mut c = Vec::new();
     let mut s = HashSet::new();
     for l in ω {
-        match lookup(var(&l), a) {
+        match a.get(var(&l)) {
             Some(r) => {
                 if &r.value == l {
                     return UnitResult::No;
@@ -119,7 +140,7 @@ fn is_unit(ω : &Clause, a : &Assignment) -> UnitResult
     }
 }
 
-fn bcp(ϕ : &CNF, a : &mut Assignment, l : i32) -> BCPResult
+fn bcp<A:Assignment>(ϕ : &CNF, a : &mut A, l : i32) -> BCPResult
 {
     let mut again = true;
     while again {
@@ -161,12 +182,17 @@ fn choose(s : HashSet<Var>) -> Option<Lit>
     return None
 }
 
-fn last_assigned(c:&Clause, l:i32, a:&Assignment) -> Rec
+fn clause_vars(c:&Clause) -> HashSet<Var>
 {
-    let s : HashSet<Var> = HashSet::from_iter(c.iter().map(|&x| var(&x)));
-    for rec in a.trail.iter().rev() {
+    HashSet::from_iter(c.iter().map(|&x| var(&x)))
+}
+
+fn last_assigned<'l, A:Assignment>(c:&Clause, l:i32, a:&'l A) -> &'l Rec
+{
+    let s = clause_vars(c);
+    for rec in a.iter().rev() {
         if rec.level <= l && s.contains(&var(&rec.value)) {
-            return rec.clone();
+            return rec;
         }
     }
     panic!("uh {:?}", s);
@@ -185,11 +211,11 @@ fn resolve(c1:&Clause, c2:&Clause, v:Var) -> Clause
     return Vec::from_iter(s.iter().cloned());
 }
 
-fn one_lit_at_level(c:&Clause, l:i32, a:&Assignment) -> bool
+fn one_lit_at_level<A:Assignment>(c:&Clause, l:i32, a:&A) -> bool
 {
     let mut found = false;
     for lit in c {
-        if let Some(r) = lookup(var(&lit), a) {
+        if let Some(r) = a.get(var(&lit)) {
             if r.level == l {
                 if found {
                     return false;
@@ -202,10 +228,10 @@ fn one_lit_at_level(c:&Clause, l:i32, a:&Assignment) -> bool
     return found;
 }
 
-fn asserting_level(c:&Clause, a:&Assignment) -> i32
+fn asserting_level<A:Assignment>(c:&Clause, a:&A) -> i32
 {
     let mut levels = c.iter().map(|&lit|
-                              match lookup(var(&lit), a) {
+                              match a.get(var(&lit)) {
                                   None => panic!("asdfasdfasdf"),
                                   Some(r) => r.level
                               }
@@ -220,30 +246,30 @@ fn asserting_level(c:&Clause, a:&Assignment) -> i32
     }
 }
 
-fn level(c:&Clause, a:&Assignment) -> i32
+fn level<A:Assignment>(c:&Clause, a:&A) -> i32
 {
     c.iter()
      .fold(0, |acc, x|
-           match lookup(var(&x), a) {
+           match a.get(var(&x)) {
                Some(r) => std::cmp::max(r.level, acc),
                _       => acc
            }
     )
 }
 
-fn analyze_conflict(a:&Assignment, c:&HashSet<Rec>) -> (i32, Clause)
+fn analyze_conflict<A:Assignment>(a:&A, c:&HashSet<Rec>) -> (i32, Clause)
 {
     let mut c1 = Vec::from_iter(c.iter().map(|&x| x.value));
 
     loop {
         let l = level(&c1, a);
-        if l == 0 
+        if l == 0
         {
             return (-1, Vec::new());
         }
         let t = last_assigned(&c1, l, a);
         let v = var(&t.value);
-        match a.graph.get(&t) {
+        match a.get_reason(&t) {
             None => panic!("nothing in graph?"),
             Some(c2set) => {
                 let c2 = c2set.iter().map(|&x| x.value).collect::<Clause>();
@@ -257,6 +283,7 @@ fn analyze_conflict(a:&Assignment, c:&HashSet<Rec>) -> (i32, Clause)
     let b = asserting_level(&c1, a);
     return (b, c1)
 }
+
 pub fn neg(l:Lit) -> Lit
 {
     match l {
@@ -264,16 +291,10 @@ pub fn neg(l:Lit) -> Lit
         Neg(v) => Pos(v)
     }
 }
-pub fn backtrack(l:i32, a:&mut Assignment)
-{
-    let trace = a.trail.iter().filter(|&x| x.level < l).cloned().collect();
-    a.graph.retain(|k, _v| k.level < l);
-    a.trail = trace;
-}
-pub fn cdcl(mut ϕ : CNF) -> (bool, Assignment)
+pub fn cdcl<A:Assignment>(mut ϕ : CNF, alloc : &Fn() -> A) -> (bool, A)
 {
     use BCPResult::*;
-    let mut assignment = Assignment::new();
+    let mut assignment = alloc();
     if let Conflict(_, _) = bcp(&ϕ, &mut assignment, 0)
     {
         return (false, assignment);
@@ -290,7 +311,7 @@ pub fn cdcl(mut ϕ : CNF) -> (bool, Assignment)
             } else {
                 let learned = c.iter().map(|&r| neg(r)).collect();
                 ϕ.push(learned);
-                backtrack(b, &mut assignment);
+                assignment.backtrack(b);
                 level = b;
             }
         }
@@ -319,12 +340,12 @@ fn smt_lit(l:&Lit) {
     }
 }
 
-fn main() {
-    let args:Vec<String> = env::args().collect();
+fn read_formula(xs:&Vec<String>) -> CNF
+{
     let mut f = Vec::new();
     let mut clause:HashSet<i8> = HashSet::new();
-    let len = args.len();
-    for a in args[1..len].iter() {
+    let len = xs.len();
+    for a in xs[1..len].iter() {
         let i = a.parse::<i8>().unwrap();
         if i == 0 {
             f.push(mk_clause(clause.iter().cloned().collect()));
@@ -333,23 +354,42 @@ fn main() {
             clause.insert(i);
         }
     }
-    let empty = Assignment::new();
+    return f;
+}
+
+fn dump_smt(f:&CNF)
+{
+    // There's probably a less gross way to do this in Rust :)
+    let empty = SimpleAssignment::new();
     let vs = unassigned(&f, &empty);
     for v in vs {
         println!("(declare-const x{} Bool)", v)
     }
     println!("(assert\n  (and");
-    for c in &f {
+    for c in f {
         print!("    (or");
-            for l in c {
-                print!(" ");
-                smt_lit(&l);
-            }
+        for l in c {
+            print!(" ");
+            smt_lit(l);
+        }
         print!(")\n");
     };
     println!("  )\n)");
     println!("(check-sat)");
-    let (sat, _assignment) = cdcl(f); 
+}
+
+fn main() {
+    // Expects a sequence of integers, each 0 marks the end of a clause.
+    // e.g. 1 2 3 0 -1 -2 -3 ==> (x₁ ∨ x₂ ∨ x₃) ∧ (¬x₁ ∨ ¬x₂ ∨ ¬x₃)
+    let args:Vec<String> = env::args().collect();
+    let f = read_formula(&args);
+
+    // Should make this an option
+    // Print out the smt2 program that can be used to confirm result
+    dump_smt(&f);
+
+    // Run the solver
+    let (sat, _assignment) = cdcl(f, &SimpleAssignment::new);
     if sat {
          println!("SAT");
      } else {

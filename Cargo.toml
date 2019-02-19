@@ -1,6 +1,10 @@
 [package]
-name = "minisat"
+name = "rusty-cdcl"
 version = "0.1.0"
 authors = ["Alexander Bakst <abakst@cs.ucsd.edu>"]
+
+[[bin]]
+name = "rusty-cdcl"
+path = "src/main.rs"
 
 [dependencies]
