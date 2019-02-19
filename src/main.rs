@@ -20,6 +20,7 @@ pub struct Rec {level:i32, value:Lit}
 #[derive(Debug, Clone)]
 pub struct SimpleAssignment {
     trail: Vec<Rec>,
+    evalmap: HashMap<Var, Rec>,
     graph: HashMap<Rec, HashSet<Rec>>
 }
 pub enum BCPResult { Conflict(i32, HashSet<Rec>), OK }
@@ -46,28 +47,22 @@ impl Rec {
 
 impl SimpleAssignment {
     fn new() -> SimpleAssignment {
-        SimpleAssignment { trail:Vec::new(), graph:HashMap::new() }
+        SimpleAssignment {
+            trail:Vec::new(),
+            evalmap:HashMap::new(),
+            graph:HashMap::new()
+        }
     }
 }
 
 impl Assignment for SimpleAssignment {
     fn add(&mut self, r:Rec, reason:HashSet<Rec>) {
-        self.trail.push(r); 
+        self.trail.push(r);
+        self.evalmap.insert(var(&r.value), r);
         self.graph.insert(r, reason);
     }
-    fn get(&self, v : Var) -> Option<&Rec> {
-        self.iter()
-            .fold(None, |acc, x|
-                  match acc {
-                      None =>
-                          if var(&x.value) == v {
-                              Some(x)
-                          } else {
-                              acc
-                          }
-                      _ => acc
-                  }
-            )
+    fn get(&self, v:Var) -> Option<&Rec> {
+        self.evalmap.get(&v)
     }
     fn get_reason(&self, r:&Rec) -> Option<&HashSet<Rec>> {
         self.graph.get(&r)
@@ -75,6 +70,7 @@ impl Assignment for SimpleAssignment {
     fn backtrack(&mut self, l:i32) {
         let trace = self.iter().filter(|&x| x.level < l).cloned().collect();
         self.graph.retain(|k, _v| k.level < l);
+        self.evalmap.retain(|_k, v| v.level < l);
         self.trail = trace;
     }
     fn is_assigned(&self, v:Var) -> bool {
