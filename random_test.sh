@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-F=`./random_formula.sh`
+F=$(./random_formula.sh)
 OUT="$(cargo run -- $F)"
 SMT2=$(echo "$OUT" | grep -v SAT)
 RUST=1
